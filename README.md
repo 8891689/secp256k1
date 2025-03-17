@@ -1,66 +1,63 @@
-# secp256k1 椭圆曲线密码学库 (C 实现)
+# secp256k1 Elliptic Curve Cryptography Library (C Implementation)
 
-## 简介
+## Introduction
 
-本项目使用 C 语言实现了 secp256k1 椭圆曲线密码学的核心算法。代码不依赖任何外部库，直接实现了所有必要的密码学原语。
+This project implements the core algorithms of secp256k1 elliptic curve cryptography in C.  The code does not rely on any external libraries and directly implements all necessary cryptographic primitives.
 
-## 实现细节
+## Implementation Details
 
-### 大整数运算
+### Big Integer Arithmetic
 
-- 采用 `uint32_t` 数组 (长度为 8) 表示 256 位无符号整数 (`BigInt` 结构体)。
-- 实现了大整数的加法、减法、乘法、比较和位操作（获取指定位）。
-- 加法和减法直接模拟手工计算过程，处理进位和借位。
-- 大整数乘法采用基础的逐字相乘算法，产生 512 位的结果。
-- 比较操作从高位到低位逐字比较。
-- 位操作通过移位和掩码实现。
+- 256-bit unsigned integers are represented using an array of 8 `uint32_t` (`BigInt` struct).
+- Implements addition, subtraction, multiplication, comparison, and bitwise operations (getting a specific bit) for big integers.
+- Addition and subtraction simulate manual calculation, handling carries and borrows.
+- Big integer multiplication uses the basic schoolbook multiplication algorithm, producing a 512-bit result.
+- Comparison compares words from most significant to least significant.
+- Bitwise operations are implemented using shifts and masks.
 
-### 模运算
+### Modular Arithmetic
 
-- **模乘法 (`mul_mod`) 采用优化实现**:
-    1.  首先计算两个 256 位大整数的乘积（512 位）。
-    2.  将 512 位结果拆分为高 256 位 (H) 和低 256 位 (L)。
-    3. 利用 secp256k1 曲线模数 `p` 的特殊形式 (p = 2^256 - 2^32 - 977) 进行快速约减：
-        - 将 H 乘以 977, 结果记作 H977.
-        - H 左移一个uint32_t字(32位), 结果记作Hshift.
-        - 将 L, H977, Hshift 相加(9 个 `uint32_t` 字长), 结果记作 Rext.
-        - 如果Rext有第九位(溢出位), 进行额外处理:
-            - 将溢出位乘以977得到extra977, 左移得到extraShift.
-            - Rext 加上 extra977 和 extraShift.
-        - 将 Rext 转换为 `BigInt`.
-    4.  如果结果仍然大于或等于 `p`，则最多进行两次减法。
-- 模加法 (`add_mod`) 和模减法 (`sub_mod`) 在大整数加减法的基础上，进行一次或两次模 `p` 的减法。
-- 模逆元 (`mod_inverse`) 使用费马小定理和模指数运算实现 (a<sup>p-2</sup> mod p)。
-- 模指数运算 (`modexp`) 使用"从左到右"的平方-乘算法。
-- 提供了优化的模约简函数(`efficient_mod`)，和通用模约简函数(`mod_generic`)，优化版本中比较结果大于等于p时,最多减两次p.
+- **Modular multiplication (`mul_mod`) uses an optimized implementation**:
+    1.  First, the product of two 256-bit big integers (512-bit) is calculated.
+    2.  The 512-bit result is split into the high 256 bits (H) and the low 256 bits (L).
+    3.  Fast reduction is performed using the special form of the secp256k1 curve modulus `p` (p = 2^256 - 2^32 - 977):
+        - Multiply H by 977, the result is H977.
+        - Shift H left by one uint32_t word (32 bits), the result is Hshift.
+        - Add L, H977, and Hshift (9 `uint32_t` words long), the result is Rext.
+        - If Rext has a ninth bit (overflow bit), perform extra processing:
+            - Multiply the overflow by 977 to get extra977, and shift left to get extraShift.
+            - Add Rext, extra977, and extraShift.
+        - Convert Rext to `BigInt`.
+    4.  If the result is still greater than or equal to `p`, perform at most two subtractions.
+- Modular addition (`add_mod`) and modular subtraction (`sub_mod`) perform one or two modular subtractions based on big integer addition and subtraction.
+- Modular inverse (`mod_inverse`) is implemented using Fermat's Little Theorem and modular exponentiation (a<sup>p-2</sup> mod p).
+- Modular exponentiation (`modexp`) uses the "left-to-right" square-and-multiply algorithm.
+- Optimized modular reduction function (`efficient_mod`) and generic modular reduction function (`mod_generic`) are provided. In the optimized version, if the comparison result is greater than or equal to p, subtract p at most twice.
 
-### 椭圆曲线点运算
+### Elliptic Curve Point Operations
 
-- `ECPoint` 结构体表示椭圆曲线上的点，包含 x 坐标、y 坐标和一个表示是否为无穷远点的标志。
-- 点加法 (`point_add`) 和倍点 (`double_point`) 运算根据标准公式实现，并处理无穷远点的情况。
-- 标量乘法 (`scalar_multiply`) 使用经典的 "double-and-add" 算法：
-    - 初始化结果点 R 为无穷远点。
-    - 从标量的最高位到最低位遍历：
-        - 将 R 加倍 (double_point)。
-        - 如果当前位为 1，则将 R 与 P 相加 (point_add)。
-    - 最终 R 即为结果。
+- The `ECPoint` struct represents a point on the elliptic curve, containing x and y coordinates and a flag indicating whether it is the point at infinity.
+- Point addition (`point_add`) and point doubling (`double_point`) operations are implemented according to standard formulas, handling the point at infinity.
+- Scalar multiplication (`scalar_multiply`) uses the classic "double-and-add" algorithm:
+    - Initialize the result point R to infinity.
+    - Iterate through the bits of the scalar from most significant to least significant:
+        - Double R (`double_point`).
+        - If the current bit is 1, add P to R (`point_add`).
+    - The final R is the result.
 
-### 辅助工具
+### Utility Functions
 
-- `print_bigint`: 将 `BigInt` 以十六进制格式打印。
-- `hex_to_bigint`: 将十六进制字符串转换为 `BigInt`。
-- `bigint_to_hex`: 将 `BigInt` 转换为十六进制字符串。
+- `print_bigint`: Prints a `BigInt` in hexadecimal format.
+- `hex_to_bigint`: Converts a hexadecimal string to a `BigInt`.
+- `bigint_to_hex`: Converts a `BigInt` to a hexadecimal string.
 
-### 9字扩展运算
+### 9-Word Extended Operations
 
-- 在模乘中对中间结果(512位), 用长度为9的 `uint32_t` 数组表示。
-- 实现了大整数乘以常数、左移一个字（32位）、9 字长加法以及 9 字长数组到 `BigInt` 的转换。 这些函数用于模乘法的优化中。
+- In modular multiplication, intermediate results (512 bits) are represented by an array of 9 `uint32_t`.
+- Implements multiplication of a big integer by a constant, left shift by one word (32 bits), 9-word addition, and conversion from a 9-word array to `BigInt`. These functions are used in the optimization of modular multiplication.
 
-## 编译
+## Compilation
 
 ```bash
 gcc -O3 -o test test.c secp256k1.c
 ```
-
-
-
