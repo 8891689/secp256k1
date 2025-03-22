@@ -1,4 +1,4 @@
-# secp256k1 Elliptic Curve Cryptography Library (C Implementation)
+# secp256k1 Elliptic Curve Cryptography mini Library (C Implementation)
 
 ## Introduction
 
