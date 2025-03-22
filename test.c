@@ -1,68 +1,90 @@
 /* gcc -O3 -o test test.c secp256k1.c */
-#include <stdio.h>
-#include <stdint.h>
-#include <time.h>
 #include "secp256k1.h"
-
-// 辅助函数：将 BigInt 转换为压缩的公钥（十六进制字符串）
-// 注意：这里假设 secp256k1.h 中已经定义了 BigInt 结构体，且其成员为 data
-void bigint_to_compressed_pubkey(const BigInt *x, const BigInt *y, char *pubkey_hex) {
-    // 确定前缀 (偶数 y 为 0x02, 奇数 y 为 0x03)
-    char prefix = (y->data[0] & 1) ? 0x03 : 0x02; // 使用 .data 访问
-
-    // 将 x 坐标转换为十六进制字符串
-    char x_hex[65]; // 64 个十六进制字符 + 空终止符
-    bigint_to_hex(x, x_hex); // 调用 bigint_to_hex
-
-    // 创建压缩的公钥字符串
-    snprintf(pubkey_hex, 67, "%02X%s", prefix, x_hex); // 2 (前缀) + 64 (x) = 66 + 空终止符
-}
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
 
 int main() {
-    // 初始化 secp256k1 参数
-    BigInt p, Gx, Gy;
-    hex_to_bigint("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F", &p);
-    hex_to_bigint("79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798", &Gx);
-    hex_to_bigint("483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8", &Gy);
+    // 初始化secp256k1参数
+    const char *p_hex = "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F";
+    BigInt p;
+    hex_to_bigint(p_hex, &p);
 
+    // 初始化基点G
+    const char *Gx_hex = "79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798";
+    const char *Gy_hex = "483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8";
     ECPoint G;
-    G.x = Gx;
-    G.y = Gy;
+    hex_to_bigint(Gx_hex, &G.x);
+    hex_to_bigint(Gy_hex, &G.y);
     G.infinity = false;
 
-    // 测试：计算私钥 1 到 n 的公钥，并测量时间
-    uint32_t num_iterations = 1000; // 更改此值以控制迭代次数
-    clock_t start_time = clock();
+    // 转换为雅可比坐标
+    ECPointJac G_jac;
+    copy_bigint(&G_jac.X, &G.x);
+    copy_bigint(&G_jac.Y, &G.y);
+    init_bigint(&G_jac.Z, 1);
+    G_jac.infinity = false;
 
-    for (uint32_t i = 1; i <= num_iterations; i++) {
-        BigInt priv;
-        init_bigint(&priv, i);
-        ECPoint pub;
-        scalar_multiply(&priv, &G, &p, &pub);
-        //  这里不进行打印，只进行计算以测量速度
+    // 存储最后5个公钥
+    ECPoint last_5[5];
+    int count = 50000;
+    int start_index = count -5;
+
+    clock_t start = clock();
+
+    for(int k = 1; k <= count; k++) {
+        BigInt scalar;
+        init_bigint(&scalar, k); // 假设init_bigint可以设置大整数为k的值
+
+        ECPointJac result_jac;
+        scalar_multiply_jac(&result_jac, &G_jac, &scalar, &p); // 标量乘法
+
+        ECPoint result_affine;
+        jacobian_to_affine(&result_affine, &result_jac, &p);
+
+        // 存储最后5个
+        if(k > start_index) {
+            int idx = k - start_index -1;
+            copy_bigint(&last_5[idx].x, &result_affine.x);
+            copy_bigint(&last_5[idx].y, &result_affine.y);
+            last_5[idx].infinity = result_affine.infinity;
+        }
+
+        // 释放内存，假设有free_bigint函数
+        free_bigint(&scalar);
+        free_bigint(&result_jac.X);
+        free_bigint(&result_jac.Y);
+        free_bigint(&result_jac.Z);
+        free_bigint(&result_affine.x);
+        free_bigint(&result_affine.y);
     }
 
-    clock_t end_time = clock();
-    double elapsed_time = (double)(end_time - start_time) / CLOCKS_PER_SEC;
-    printf("进行 %u 次迭代的时间: %.4f 秒\n", num_iterations, elapsed_time);
-    printf("每秒计算次数: %.2f\n", num_iterations / elapsed_time);
+    clock_t end = clock();
+    double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
 
-    // 打印最后 5 个压缩的公钥
-    printf("\n最后 5 个压缩的公钥:\n");
-    for (uint32_t i = num_iterations - 4; i <= num_iterations; i++) {
-        BigInt priv;
-        init_bigint(&priv, i);
-        char priv_hex[65]; // 64 个十六进制字符 + 空终止符
-        bigint_to_hex(&priv, priv_hex); // 将私钥转换为十六进制
+    printf("生成%d个公钥耗时: %.4f秒\n", count, time_spent);
+    printf("最后5个公钥坐标:\n");
 
-        ECPoint pub;
-        scalar_multiply(&priv, &G, &p, &pub);
+    char hexStr[256] = {0};
+    for(int i=0; i<5; i++) {
+        memset(hexStr, 0, sizeof(hexStr));
+        bigint_to_hex(&last_5[i].x, hexStr);
+        printf("公钥%d x: %s\n", count -5 + i +1, hexStr);
 
-        char compressed_pubkey[67];  // 压缩的公钥: 2 (前缀) + 64 (x 坐标) + 1 (空终止符)
-        bigint_to_compressed_pubkey(&pub.x, &pub.y, compressed_pubkey); // 计算压缩公钥
+        memset(hexStr, 0, sizeof(hexStr));
+        bigint_to_hex(&last_5[i].y, hexStr);
+        printf("公钥%d y: %s\n", count -5 + i +1, hexStr);
+    }
 
-        printf("私钥 (十进制): %u, (十六进制): %s\n", i, priv_hex);
-        printf("压缩的公钥: %s\n", compressed_pubkey);
+    // 释放其他资源_b_bigint(&p);
+    free_bigint(&G.x);
+    free_bigint(&G.y);
+    free_bigint(&G_jac.X);
+    free_bigint(&G_jac.Y);
+    free_bigint(&G_jac.Z);
+    for(int i=0; i<5; i++) {
+        free_bigint(&last_5[i].x);
+        free_bigint(&last_5[i].y);
     }
 
     return 0;
