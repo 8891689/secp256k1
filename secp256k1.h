@@ -1,4 +1,6 @@
-/*Author: 8891689/ChatGPT */
+/*Author: 8891689
+  Assist in creation ：ChatGPT 
+ */
 #ifndef SECP256K1_H
 #define SECP256K1_H
 
