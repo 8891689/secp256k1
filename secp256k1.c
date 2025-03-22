@@ -1,5 +1,5 @@
 /*Author: 8891689
-  Assist in creation ：ChatGPT 
+  Assist in creation ：ChatGPT / deepseek
  */
 #include "secp256k1.h"
 #include <stdio.h>
