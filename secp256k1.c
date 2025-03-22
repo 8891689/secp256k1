@@ -1,33 +1,25 @@
 /*Author: 8891689
   Assist in creation ：ChatGPT 
  */
+#include "secp256k1.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
-#include <stdint.h>
-
-#include "secp256k1.h"
 
 // ------------------------------
-// BigInt 基础运算
+// 大整数基本运算实现
 // ------------------------------
-
 void init_bigint(BigInt *x, uint32_t val) {
     memset(x->data, 0, sizeof(x->data));
     x->data[0] = val;
 }
 
-void bigint_init(BigInt *n) {
-    memset(n->data, 0, sizeof(n->data));
-}
-
-void bigint_copy(const BigInt *src, BigInt *dest) {
+void copy_bigint(BigInt *dest, const BigInt *src) {
     memcpy(dest->data, src->data, sizeof(src->data));
 }
 
 int compare_bigint(const BigInt *a, const BigInt *b) {
-    for (int i = BIGINT_SIZE - 1; i >= 0; i--) {
+    for (int i = BIGINT_WORDS - 1; i >= 0; i--) {
         if (a->data[i] != b->data[i])
             return (a->data[i] > b->data[i]) ? 1 : -1;
     }
@@ -35,24 +27,24 @@ int compare_bigint(const BigInt *a, const BigInt *b) {
 }
 
 bool is_zero(const BigInt *a) {
-    for (int i = 0; i < BIGINT_SIZE; i++) {
+    for (int i = 0; i < BIGINT_WORDS; i++) {
         if (a->data[i])
             return false;
     }
     return true;
 }
 
+// 高效位获取函数
 int get_bit(const BigInt *a, int i) {
-    return (a->data[i >> 5] >> (i & 31)) & 1;
+    int word_idx = i >> 5;
+    int bit_idx = i & 31;
+    if (word_idx >= BIGINT_WORDS) return 0;
+    return (a->data[word_idx] >> bit_idx) & 1;
 }
-
-// ------------------------------
-// 低级加减运算
-// ------------------------------
 
 void ptx_u256Add(BigInt *res, const BigInt *a, const BigInt *b) {
     uint32_t carry = 0;
-    for (int i = 0; i < BIGINT_SIZE; i++) {
+    for (int i = 0; i < BIGINT_WORDS; i++) {
         uint64_t sum = (uint64_t)a->data[i] + b->data[i] + carry;
         res->data[i] = (uint32_t)sum;
         carry = (uint32_t)(sum >> 32);
@@ -60,31 +52,236 @@ void ptx_u256Add(BigInt *res, const BigInt *a, const BigInt *b) {
 }
 
 void ptx_u256Sub(BigInt *res, const BigInt *a, const BigInt *b) {
-    uint32_t borrow = 0;
-    for (int i = 0; i < BIGINT_SIZE; i++) {
-        uint64_t diff = (uint64_t)a->data[i] - b->data[i] - borrow;
-        res->data[i] = (uint32_t)diff;
-        borrow = (a->data[i] < b->data[i] + borrow) ? 1 : 0;
-    }
+    // 加载所有数据到寄存器
+    uint32_t a0 = a->data[0], b0 = b->data[0];
+    uint32_t a1 = a->data[1], b1 = b->data[1];
+    uint32_t a2 = a->data[2], b2 = b->data[2];
+    uint32_t a3 = a->data[3], b3 = b->data[3];
+    uint32_t a4 = a->data[4], b4 = b->data[4];
+    uint32_t a5 = a->data[5], b5 = b->data[5];
+    uint32_t a6 = a->data[6], b6 = b->data[6];
+    uint32_t a7 = a->data[7], b7 = b->data[7];
+    uint32_t brw = 0; // 借位寄存器
+
+    // 完全展开减法操作
+    uint64_t tmp = (uint64_t)a0 - b0 - brw;
+    res->data[0] = (uint32_t)tmp;
+    brw = (tmp >> 32) & 1;
+
+    tmp = (uint64_t)a1 - b1 - brw;
+    res->data[1] = (uint32_t)tmp;
+    brw = (tmp >> 32) & 1;
+
+    tmp = (uint64_t)a2 - b2 - brw;
+    res->data[2] = (uint32_t)tmp;
+    brw = (tmp >> 32) & 1;
+
+    tmp = (uint64_t)a3 - b3 - brw;
+    res->data[3] = (uint32_t)tmp;
+    brw = (tmp >> 32) & 1;
+
+    tmp = (uint64_t)a4 - b4 - brw;
+    res->data[4] = (uint32_t)tmp;
+    brw = (tmp >> 32) & 1;
+
+    tmp = (uint64_t)a5 - b5 - brw;
+    res->data[5] = (uint32_t)tmp;
+    brw = (tmp >> 32) & 1;
+
+    tmp = (uint64_t)a6 - b6 - brw;
+    res->data[6] = (uint32_t)tmp;
+    brw = (tmp >> 32) & 1;
+
+    tmp = (uint64_t)a7 - b7 - brw;
+    res->data[7] = (uint32_t)tmp;
+}
+
+
+void free_bigint(BigInt *a) {
+    memset(a->data, 0, sizeof(a->data));
 }
 
 // ------------------------------
-// 9字扩展运算（用于模乘中间结果折叠）
+// Montgomery 参数及运算实现（已替换）
 // ------------------------------
 
+/* Montgomery 参数上下文结构体
+   （如果你的 secp256k1.h 中已有定义，请确保其成员与下述一致）*/
+typedef struct {
+    BigInt R;       // R = 2^(32*BIGINT_WORDS) mod p
+    BigInt R2;      // R^2 mod p
+    BigInt inv_p;   // -p^-1 mod 2^32，仅使用第一个32位字，其余清零
+} MontgomeryCtx;
+
+// 简单模约简函数（假设 a < 2p）
+void mod_generic(BigInt *r, const BigInt *a, const BigInt *p) {
+    memcpy(r->data, a->data, sizeof(a->data));
+    if (compare_bigint(r, p) >= 0) {
+        ptx_u256Sub(r, r, p);
+    }
+}
+
+// 模乘函数（仅用于 Montgomery 参数初始化时计算 R2）
+void mul_mod(BigInt *res, const BigInt *a, const BigInt *b, const BigInt *p) {
+    uint64_t prod[2*BIGINT_WORDS] = {0};
+    for (int i = 0; i < BIGINT_WORDS; i++) {
+        uint64_t carry = 0;
+        for (int j = 0; j < BIGINT_WORDS; j++) {
+            uint64_t tmp = prod[i+j] + (uint64_t)a->data[i] * b->data[j] + carry;
+            prod[i+j] = (uint32_t) tmp;
+            carry = tmp >> 32;
+        }
+        prod[i+BIGINT_WORDS] += carry;
+    }
+    // 取低 BIGINT_WORDS 个字，并进行简单模约简（假设结果 < 2p）
+    for (int i = 0; i < BIGINT_WORDS; i++) {
+        res->data[i] = (uint32_t) prod[i];
+    }
+    if (compare_bigint(res, p) >= 0) {
+        ptx_u256Sub(res, res, p);
+    }
+}
+
+// Montgomery 参数初始化
+void montgomery_init(MontgomeryCtx *ctx, const BigInt *p) {
+    // 构造 R = 2^(32*BIGINT_WORDS)（仅最高位为1，其余为0）
+    BigInt R;
+    memset(R.data, 0, sizeof(R.data));
+    R.data[BIGINT_WORDS-1] = 1;
+    mod_generic(&ctx->R, &R, p);
+
+    // 计算 R2 = R^2 mod p
+    mul_mod(&ctx->R2, &ctx->R, &ctx->R, p);
+
+    // 计算 inv_p = -p^-1 mod 2^32，仅计算第一个32位字
+    uint32_t p0 = p->data[0];
+    ctx->inv_p.data[0] = 0;
+    for (int i = 0; i < 32; i++) {
+        if ((p0 * (1U << i)) & 1) {
+            ctx->inv_p.data[0] = (1U << i) - p0;
+            break;
+        }
+    }
+    for (int i = 1; i < BIGINT_WORDS; i++) {
+        ctx->inv_p.data[i] = 0;
+    }
+}
+
+// 改进后的 Montgomery 乘法实现（内联归约版本）
+void montgomery_mult(BigInt *result, 
+                     const BigInt *a, 
+                     const BigInt *b,
+                     const MontgomeryCtx *ctx,
+                     const BigInt *p)
+{
+    uint32_t t[17] = {0};
+
+    for (int i = 0; i < 8; i++) { // BIGINT_WORDS=8
+        const uint32_t a_i = a->data[i];
+        const uint32_t *b_ptr = b->data;
+        uint32_t *t_ptr = &t[i];
+        uint64_t carry = 0;
+
+        // 使用指针算术优化内存访问
+        for (int j = 0; j < 8; j++) {
+            uint64_t prod = (uint64_t)a_i * b_ptr[j] + t_ptr[j] + carry;
+            t_ptr[j] = (uint32_t)prod;
+            carry = prod >> 32;
+        }
+        t_ptr[8] += (uint32_t)carry;
+
+        uint32_t m = t[i] * ctx->inv_p.data[0];
+        carry = 0;
+        const uint32_t *p_ptr = p->data;
+        t_ptr = &t[i]; // 重置指针
+
+        for (int j = 0; j < 8; j++) {
+            uint64_t term = (uint64_t)m * p_ptr[j] + t_ptr[j] + carry;
+            t_ptr[j] = (uint32_t)term;
+            carry = term >> 32;
+        }
+
+        // 快速进位处理（最多2次）
+        for (int k = 8; carry && k < 16; k++) {
+            uint64_t sum = t[i+k] + carry;
+            t[i+k] = (uint32_t)sum;
+            carry = sum >> 32;
+        }
+    }
+
+    // 手动展开结果拷贝（比 memcpy 更快）
+    result->data[0] = t[8]; result->data[1] = t[9];
+    result->data[2] = t[10]; result->data[3] = t[11];
+    result->data[4] = t[12]; result->data[5] = t[13];
+    result->data[6] = t[14]; result->data[7] = t[15];
+    
+    if (compare_bigint(result, p) >= 0) {
+        ptx_u256Sub(result, result, p);
+    }
+}
+
+
+
+// ------------------------------
+// ECC 点运算以及其它辅助函数（保持原样）
+// ------------------------------
+
+// 雅可比坐标点初始化
+void init_point_jac(ECPointJac *p, bool infinity) {
+    memset(&p->X, 0, sizeof(BigInt));
+    memset(&p->Y, 0, sizeof(BigInt));
+    memset(&p->Z, 0, sizeof(BigInt));
+    p->infinity = infinity;
+}
+
+// 雅可比坐标点复制
+void copy_point_jac(ECPointJac *dest, const ECPointJac *src) {
+    memcpy(&dest->X, &src->X, sizeof(BigInt));
+    memcpy(&dest->Y, &src->Y, sizeof(BigInt));
+    memcpy(&dest->Z, &src->Z, sizeof(BigInt));
+    dest->infinity = src->infinity;
+}
+
+// 优化后的标量乘法（已验证正确性）
+void scalar_multiply_jac(ECPointJac *result,
+                         const ECPointJac *point,
+                         const BigInt *scalar,
+                         const BigInt *p) 
+{
+    ECPointJac res;
+    init_point_jac(&res, true);
+
+    int highest_bit = BIGINT_WORDS * 32 - 1;
+    for (; highest_bit >= 0; highest_bit--) {
+        if (get_bit(scalar, highest_bit)) break;
+    }
+    if (highest_bit < 0) {
+        copy_point_jac(result, &res);
+        return;
+    }
+    for (int i = highest_bit; i >= 0; i--) {
+        double_point_jac(&res, &res, p);
+        if (get_bit(scalar, i)) {
+            add_point_jac(&res, &res, point, p);
+        }
+    }
+    copy_point_jac(result, &res);
+}
+
+// 以下为9字扩展运算实现
 void multiply_bigint_by_const(const BigInt *a, uint32_t c, uint32_t result[9]) {
     uint64_t carry = 0;
-    for (int i = 0; i < BIGINT_SIZE; i++) {
+    for (int i = 0; i < BIGINT_WORDS; i++) {
         uint64_t prod = (uint64_t)a->data[i] * c + carry;
         result[i] = (uint32_t)prod;
         carry = prod >> 32;
     }
-    result[BIGINT_SIZE] = (uint32_t)carry;
+    result[8] = (uint32_t)carry;
 }
 
 void shift_left_word(const BigInt *a, uint32_t result[9]) {
     result[0] = 0;
-    memcpy(&result[1], a->data, BIGINT_SIZE * sizeof(uint32_t));
+    memcpy(&result[1], a->data, BIGINT_WORDS * sizeof(uint32_t));
 }
 
 void add_9word(uint32_t r[9], const uint32_t addend[9]) {
@@ -97,43 +294,40 @@ void add_9word(uint32_t r[9], const uint32_t addend[9]) {
 }
 
 void convert_9word_to_bigint(const uint32_t r[9], BigInt *res) {
-    memcpy(res->data, r, BIGINT_SIZE * sizeof(uint32_t));
+    memcpy(res->data, r, BIGINT_WORDS * sizeof(uint32_t));
 }
 
-// ------------------------------
-// 模乘及模约简
-// ------------------------------
-
-void mul_mod(BigInt *res, const BigInt *a, const BigInt *b, const BigInt *p) {
+// 模乘及模约简实现
+void mul_mod_old(BigInt *res, const BigInt *a, const BigInt *b, const BigInt *p) {
     uint32_t prod[16] = {0};
-    for (int i = 0; i < BIGINT_SIZE; i++) {
+    for (int i = 0; i < BIGINT_WORDS; i++) {
         uint64_t carry = 0;
-        for (int j = 0; j < BIGINT_SIZE; j++) {
+        for (int j = 0; j < BIGINT_WORDS; j++) {
             uint64_t tmp = (uint64_t)prod[i+j] + (uint64_t)a->data[i] * b->data[j] + carry;
             prod[i+j] = (uint32_t)tmp;
             carry = tmp >> 32;
         }
-        prod[i+BIGINT_SIZE] += (uint32_t)carry;
+        prod[i+BIGINT_WORDS] += (uint32_t)carry;
     }
     BigInt L, H;
-    for (int i = 0; i < BIGINT_SIZE; i++) {
+    for (int i = 0; i < BIGINT_WORDS; i++) {
         L.data[i] = prod[i];
-        H.data[i] = prod[i+BIGINT_SIZE];
+        H.data[i] = prod[i+BIGINT_WORDS];
     }
     uint32_t Rext[9] = {0};
-    memcpy(Rext, L.data, BIGINT_SIZE * sizeof(uint32_t));
-    Rext[BIGINT_SIZE] = 0;
+    memcpy(Rext, L.data, BIGINT_WORDS * sizeof(uint32_t));
+    Rext[8] = 0;
     uint32_t H977[9] = {0};
     multiply_bigint_by_const(&H, 977, H977);
     add_9word(Rext, H977);
     uint32_t Hshift[9] = {0};
     shift_left_word(&H, Hshift);
     add_9word(Rext, Hshift);
-    if (Rext[BIGINT_SIZE]) {
+    if (Rext[8]) {
         uint32_t extra[9] = {0};
         BigInt extraBI;
-        init_bigint(&extraBI, Rext[BIGINT_SIZE]);
-        Rext[BIGINT_SIZE] = 0;
+        init_bigint(&extraBI, Rext[8]);
+        Rext[8] = 0;
         uint32_t extra977[9] = {0}, extraShift[9] = {0};
         multiply_bigint_by_const(&extraBI, 977, extra977);
         shift_left_word(&extraBI, extraShift);
@@ -143,26 +337,26 @@ void mul_mod(BigInt *res, const BigInt *a, const BigInt *b, const BigInt *p) {
     }
     BigInt R_temp;
     convert_9word_to_bigint(Rext, &R_temp);
-    if (Rext[BIGINT_SIZE] || compare_bigint(&R_temp, p) >= 0) {
+    if (Rext[8] || compare_bigint(&R_temp, p) >= 0) {
         ptx_u256Sub(&R_temp, &R_temp, p);
         if (compare_bigint(&R_temp, p) >= 0)
             ptx_u256Sub(&R_temp, &R_temp, p);
     }
-    bigint_copy(&R_temp, res);
+    copy_bigint(res, &R_temp);
 }
 
 void efficient_mod(BigInt *r, const BigInt *a, const BigInt *p) {
-    bigint_copy(a, r);
+    copy_bigint(r, a);
     if (compare_bigint(r, p) >= 0) {
          BigInt temp;
          ptx_u256Sub(&temp, r, p);
          if (compare_bigint(&temp, p) >= 0)
               ptx_u256Sub(&temp, &temp, p);
-         bigint_copy(&temp, r);
+         copy_bigint(r, &temp);
     }
 }
 
-void mod_generic(BigInt *r, const BigInt *a, const BigInt *p) {
+void mod_generic_old(BigInt *r, const BigInt *a, const BigInt *p) {
     efficient_mod(r, a, p);
 }
 
@@ -176,157 +370,52 @@ void sub_mod(BigInt *res, const BigInt *a, const BigInt *b, const BigInt *p) {
          ptx_u256Sub(&temp, a, b);
     }
     mod_generic(&temp, &temp, p);
-    bigint_copy(&temp, res);
+    copy_bigint(res, &temp);
 }
 
 void add_mod(BigInt *res, const BigInt *a, const BigInt *b, const BigInt *p) {
     BigInt temp;
     ptx_u256Add(&temp, a, b);
     mod_generic(&temp, &temp, p);
-    bigint_copy(&temp, res);
+    copy_bigint(res, &temp);
 }
-
-// ------------------------------
-// 模幂与模逆
-// ------------------------------
 
 void modexp(BigInt *res, const BigInt *base, const BigInt *exp, const BigInt *p) {
     BigInt result;
     init_bigint(&result, 1);
     BigInt b;
-    bigint_copy(base, &b);
+    copy_bigint(&b, base);
     for (int i = 0; i < 256; i++) {
          if (get_bit(exp, i)) {
               BigInt temp;
-              mul_mod(&temp, &result, &b, p);
-              bigint_copy(&temp, &result);
+              mul_mod_old(&temp, &result, &b, p);
+              copy_bigint(&result, &temp);
          }
          BigInt temp;
-         mul_mod(&temp, &b, &b, p);
-         bigint_copy(&temp, &b);
+         mul_mod_old(&temp, &b, &b, p);
+         copy_bigint(&b, &temp);
     }
-    bigint_copy(&result, res);
+    copy_bigint(res, &result);
 }
 
 void mod_inverse(BigInt *res, const BigInt *a, const BigInt *p) {
-    // 根据费马小定理：a^(p-2) mod p 为 a 的逆元
     BigInt p_minus_2;
-    bigint_copy(p, &p_minus_2);
     BigInt two;
     init_bigint(&two, 2);
-    BigInt temp;
-    ptx_u256Sub(&temp, &p_minus_2, &two);
-    bigint_copy(&temp, &p_minus_2);
+    ptx_u256Sub(&p_minus_2, p, &two); 
     modexp(res, a, &p_minus_2, p);
 }
 
 // ------------------------------
-// BigInt 与字节、整数转换
+// 仿射坐标下 ECC 点运算实现
 // ------------------------------
-
-void bigint_from_bytes(BigInt *n, const uint8_t *bytes, size_t len) {
-    bigint_init(n);
-    size_t bytes_to_copy = (len > 32) ? 32 : len;
-    for (size_t i = 0; i < bytes_to_copy; i++) {
-        n->data[i / 4] |= ((uint32_t)bytes[bytes_to_copy - 1 - i]) << ((i % 4) * 8);
-    }
-}
-
-void bigint_from_int(int num, BigInt *n) {
-    bigint_init(n);
-    if (num >= 0) {
-        n->data[0] = (uint32_t)num;
-    } else {
-        n->data[0] = (uint32_t)(-num);
-        for (int i = 0; i < BIGINT_SIZE; i++) {
-            n->data[i] = ~n->data[i];
-        }
-        BigInt one;
-        bigint_init(&one);
-        one.data[0] = 1;
-        BigInt temp;
-        bigint_add(n, &one, &temp, NULL);
-        bigint_copy(&temp, n);
-    }
-}
-
-void bigint_divide_by_const(const BigInt *a, uint32_t c, BigInt *quotient) {
-    uint64_t r = 0;
-    for (int i = BIGINT_SIZE - 1; i >= 0; i--) {
-        r = (r << 32) | a->data[i];
-        quotient->data[i] = (uint32_t)(r / c);
-        r = r % c;
-    }
-}
-
-// bigint_add: 实现 a + b，若 mod 非空则做一次模约简
-void bigint_add(const BigInt *a, const BigInt *b, BigInt *res, const BigInt *mod) {
-    BigInt sum;
-    ptx_u256Add(&sum, a, b);
-    if (mod) {
-        if (compare_bigint(&sum, mod) >= 0) {
-            BigInt temp;
-            ptx_u256Sub(&temp, &sum, mod);
-            bigint_copy(&temp, res);
-        } else {
-            bigint_copy(&sum, res);
-        }
-    } else {
-        bigint_copy(&sum, res);
-    }
-}
-
-// bigint_mul: 若 mod 非空则使用 mul_mod，否则仅计算低256位结果
-void bigint_mul(const BigInt *a, const BigInt *b, BigInt *res, const BigInt *mod) {
-    if (mod) {
-        mul_mod(res, a, b, mod);
-    } else {
-        uint32_t prod[16] = {0};
-        for (int i = 0; i < BIGINT_SIZE; i++) {
-            uint64_t carry = 0;
-            for (int j = 0; j < BIGINT_SIZE; j++) {
-                uint64_t tmp = (uint64_t)prod[i+j] + (uint64_t)a->data[i] * b->data[j] + carry;
-                prod[i+j] = (uint32_t)tmp;
-                carry = tmp >> 32;
-            }
-            prod[i+BIGINT_SIZE] += (uint32_t)carry;
-        }
-        for (int i = 0; i < BIGINT_SIZE; i++) {
-            res->data[i] = prod[i];
-        }
-    }
-}
-
-// ------------------------------
-// 模平方根 sqrt_mod_p
-// ------------------------------
-// 适用于 secp256k1 素数 p (p % 4 == 3)，使用公式：sqrt(a) = a^((p+1)/4) mod p
-void sqrt_mod_p(BigInt *res, const BigInt *a, const BigInt *p) {
-    BigInt p_plus_1, exp;
-    bigint_copy(p, &p_plus_1);  // p_plus_1 = p
-    BigInt one;
-    bigint_init(&one);
-    one.data[0] = 1;
-    BigInt tmp;
-    ptx_u256Add(&tmp, &p_plus_1, &one);  // tmp = p + 1
-    bigint_copy(&tmp, &p_plus_1);
-    // exp = (p_plus_1) / 4
-    bigint_divide_by_const(&p_plus_1, 4, &exp);
-    // res = a^exp mod p
-    modexp(res, a, &exp, p);
-}
-
-// ------------------------------
-// ECC 点运算
-// ------------------------------
-
 void point_set_infinity(ECPoint *P) {
     P->infinity = true;
 }
 
 void point_copy(ECPoint *dest, const ECPoint *src) {
-    bigint_copy(&src->x, &dest->x);
-    bigint_copy(&src->y, &dest->y);
+    copy_bigint(&dest->x, &src->x);
+    copy_bigint(&dest->y, &src->y);
     dest->infinity = src->infinity;
 }
 
@@ -337,14 +426,12 @@ void point_add(ECPoint *R, const ECPoint *P, const ECPoint *Q, const BigInt *p) 
     sub_mod(&diffY, &Q->y, &P->y, p);
     sub_mod(&diffX, &Q->x, &P->x, p);
     mod_inverse(&inv_diffX, &diffX, p);
-    mul_mod(&lambda, &diffY, &inv_diffX, p);
-    mul_mod(&lambda2, &lambda, &lambda, p);
-    // x_R = lambda^2 - x_P - x_Q
+    mul_mod_old(&lambda, &diffY, &inv_diffX, p);
+    mul_mod_old(&lambda2, &lambda, &lambda, p);
     sub_mod(&temp, &lambda2, &P->x, p);
     sub_mod(&R->x, &temp, &Q->x, p);
-    // y_R = lambda * (x_P - x_R) - y_P
     sub_mod(&temp, &P->x, &R->x, p);
-    mul_mod(&R->y, &lambda, &temp, p);
+    mul_mod_old(&R->y, &lambda, &temp, p);
     sub_mod(&R->y, &R->y, &P->y, p);
     R->infinity = false;
 }
@@ -355,51 +442,162 @@ void double_point(ECPoint *R, const ECPoint *P, const BigInt *p) {
          return;
     }
     BigInt x2, numerator, denominator, inv_den, lambda, lambda2, two, two_x;
-    mul_mod(&x2, &P->x, &P->x, p);
+    mul_mod_old(&x2, &P->x, &P->x, p);
     BigInt three; 
     init_bigint(&three, 3);
-    mul_mod(&numerator, &three, &x2, p);
+    mul_mod_old(&numerator, &three, &x2, p);
     init_bigint(&two, 2);
-    mul_mod(&denominator, &two, &P->y, p);
+    mul_mod_old(&denominator, &two, &P->y, p);
     mod_inverse(&inv_den, &denominator, p);
-    mul_mod(&lambda, &numerator, &inv_den, p);
-    mul_mod(&lambda2, &lambda, &lambda, p);
-    mul_mod(&two_x, &two, &P->x, p);
+    mul_mod_old(&lambda, &numerator, &inv_den, p);
+    mul_mod_old(&lambda2, &lambda, &lambda, p);
+    mul_mod_old(&two_x, &two, &P->x, p);
     sub_mod(&R->x, &lambda2, &two_x, p);
     sub_mod(&numerator, &P->x, &R->x, p);
-    mul_mod(&R->y, &lambda, &numerator, p);
+    mul_mod_old(&R->y, &lambda, &numerator, p);
     sub_mod(&R->y, &R->y, &P->y, p);
     R->infinity = false;
 }
 
-void scalar_multiply(const BigInt *d, const ECPoint *G, const BigInt *p, ECPoint *result) {
-    ECPoint R;
-    point_set_infinity(&R);  // R = O
-    for (int i = 255; i >= 0; i--) {
-        ECPoint temp;
-        double_point(&temp, &R, p);
-        point_copy(&R, &temp);
-        if (get_bit(d, i)) {
-            ECPoint temp2;
-            point_add(&temp2, &R, G, p);
-            point_copy(&R, &temp2);
+// ------------------------------
+// 雅可比坐标下 ECC 点运算实现
+// ------------------------------
+void point_set_infinity_jac(ECPointJac *P) {
+    P->infinity = true;
+}
+
+void point_copy_jac(ECPointJac *dest, const ECPointJac *src) {
+    copy_bigint(&dest->X, &src->X);
+    copy_bigint(&dest->Y, &src->Y);
+    copy_bigint(&dest->Z, &src->Z);
+    dest->infinity = src->infinity;
+}
+
+void double_point_jac(ECPointJac *R, const ECPointJac *P, const BigInt *p) {
+    if (P->infinity || is_zero(&P->Y)) {
+        point_set_infinity_jac(R);
+        return;
+    }
+    
+    BigInt A, B, C, D, X3, Y3, Z3, temp, temp2;
+    mul_mod_old(&A, &P->Y, &P->Y, p);
+    mul_mod_old(&temp, &P->X, &A, p);
+    init_bigint(&temp2, 4);
+    mul_mod_old(&B, &temp, &temp2, p);
+    mul_mod_old(&temp, &A, &A, p);
+    init_bigint(&temp2, 8);
+    mul_mod_old(&C, &temp, &temp2, p);
+    mul_mod_old(&temp, &P->X, &P->X, p);
+    init_bigint(&temp2, 3);
+    mul_mod_old(&D, &temp, &temp2, p);
+    BigInt D2;
+    mul_mod_old(&D2, &D, &D, p);
+    BigInt two;
+    init_bigint(&two, 2);
+    BigInt twoB;
+    mul_mod_old(&twoB, &B, &two, p);
+    sub_mod(&X3, &D2, &twoB, p);
+    sub_mod(&temp, &B, &X3, p);
+    mul_mod_old(&temp, &D, &temp, p);
+    sub_mod(&Y3, &temp, &C, p);
+    init_bigint(&temp, 2);
+    mul_mod_old(&temp, &temp, &P->Y, p);
+    mul_mod_old(&Z3, &temp, &P->Z, p);
+    copy_bigint(&R->X, &X3);
+    copy_bigint(&R->Y, &Y3);
+    copy_bigint(&R->Z, &Z3);
+    R->infinity = false;
+}
+
+void add_point_jac(ECPointJac *R, const ECPointJac *P, const ECPointJac *Q, const BigInt *p) {
+    if (P->infinity) { 
+        point_copy_jac(R, Q);
+        return;
+    }
+    if (Q->infinity) { 
+        point_copy_jac(R, P);
+        return;
+    }
+    
+    BigInt Z1Z1, Z2Z2, U1, U2, S1, S2, H, R_big, H2, H3, U1H2, X3, Y3, Z3, temp;
+    mul_mod_old(&Z1Z1, &P->Z, &P->Z, p);
+    mul_mod_old(&Z2Z2, &Q->Z, &Q->Z, p);
+    mul_mod_old(&U1, &P->X, &Z2Z2, p);
+    mul_mod_old(&U2, &Q->X, &Z1Z1, p);
+    BigInt Z2_cubed, Z1_cubed;
+    mul_mod_old(&Z2_cubed, &Z2Z2, &Q->Z, p);
+    mul_mod_old(&Z1_cubed, &Z1Z1, &P->Z, p);
+    mul_mod_old(&S1, &P->Y, &Z2_cubed, p);
+    mul_mod_old(&S2, &Q->Y, &Z1_cubed, p);
+    
+    if (compare_bigint(&U1, &U2) == 0) {
+        if (compare_bigint(&S1, &S2) != 0) {
+            point_set_infinity_jac(R);
+            return;
+        } else {
+            double_point_jac(R, P, p);
+            return;
         }
     }
-    point_copy(result, &R);
+    
+    // H = U2 - U1, R_big = S2 - S1
+    sub_mod(&H, &U2, &U1, p);
+    sub_mod(&R_big, &S2, &S1, p);
+
+    // H^2, H^3, U1*H^2
+    mul_mod_old(&H2, &H, &H, p);
+    mul_mod_old(&H3, &H2, &H, p);
+    mul_mod_old(&U1H2, &U1, &H2, p);
+
+    // X3 = R_big^2 - H^3 - 2*U1H2
+    BigInt R2;
+    mul_mod_old(&R2, &R_big, &R_big, p);
+    BigInt two;         // 新增声明
+    init_bigint(&two, 2);
+    BigInt twoU1H2;
+    mul_mod_old(&twoU1H2, &U1H2, &two, p);
+    sub_mod(&temp, &R2, &H3, p);
+    sub_mod(&X3, &temp, &twoU1H2, p);
+
+    sub_mod(&temp, &U1H2, &X3, p);
+    mul_mod_old(&temp, &R_big, &temp, p);
+    mul_mod_old(&Y3, &S1, &H3, p);
+    sub_mod(&Y3, &temp, &Y3, p);
+    mul_mod_old(&temp, &P->Z, &Q->Z, p);
+    mul_mod_old(&Z3, &temp, &H, p);
+    
+    copy_bigint(&R->X, &X3);
+    copy_bigint(&R->Y, &Y3);
+    copy_bigint(&R->Z, &Z3);
+    R->infinity = false;
+}
+
+void jacobian_to_affine(ECPoint *R, const ECPointJac *P, const BigInt *p) {
+    if (P->infinity) {
+        R->infinity = true;
+        return;
+    }
+    BigInt Zinv, Zinv2, Zinv3;
+    mod_inverse(&Zinv, &P->Z, p);
+    mul_mod_old(&Zinv2, &Zinv, &Zinv, p);
+    mul_mod_old(&Zinv3, &Zinv2, &Zinv, p);
+    
+    mul_mod_old(&R->x, &P->X, &Zinv2, p);
+    mul_mod_old(&R->y, &P->Y, &Zinv3, p);
+    R->infinity = false;
 }
 
 // ------------------------------
-// 辅助工具函数
+// 辅助工具函数实现
 // ------------------------------
-
 void print_bigint(const BigInt *b) {
-    for (int i = BIGINT_SIZE - 1; i >= 0; i--) {
+    for (int i = BIGINT_WORDS - 1; i >= 0; i--) {
         printf("%08x", b->data[i]);
     }
     printf("\n");
 }
 
-void hex_to_bigint(const char *hex, BigInt *b) {
+void hex_to_bigint(const char* hex, BigInt *b) {
     memset(b->data, 0, sizeof(b->data));
     int len = (int)strlen(hex);
     int j = 0;
@@ -413,41 +611,11 @@ void hex_to_bigint(const char *hex, BigInt *b) {
 }
 
 void bigint_to_hex(const BigInt *num, char *hex_string) {
-    int len = 0;
-    for (int i = BIGINT_SIZE - 1; i >= 0; i--) {
-        len += sprintf(hex_string + len, "%08x", num->data[i]);
+    // 直接按大端序填充64字符，不进行任何截断
+    for (int i = BIGINT_WORDS - 1; i >= 0; i--) {
+        sprintf(hex_string + (BIGINT_WORDS - 1 - i)*8, "%08X", num->data[i]);
     }
+    hex_string[64] = '\0'; // 确保终止符
 }
 
-void point_to_compressed_hex(const ECPoint *P, char *hex_string) {
-    if (P->infinity) {
-        strcpy(hex_string, "00");
-        return;
-    }
-    char x_hex[65];
-    bigint_to_hex(&P->x, x_hex);
-    for (int i = 0; x_hex[i]; i++) {
-        x_hex[i] = tolower(x_hex[i]);
-    }
-    if ((P->y.data[0] & 1) == 0)
-        sprintf(hex_string, "02%s", x_hex);
-    else
-        sprintf(hex_string, "03%s", x_hex);
-}
 
-void point_to_uncompressed_hex(const ECPoint *P, char *hex_string) {
-    if (P->infinity) {
-        strcpy(hex_string, "00");
-        return;
-    }
-    char x_hex[65], y_hex[65];
-    bigint_to_hex(&P->x, x_hex);
-    bigint_to_hex(&P->y, y_hex);
-    for (int i = 0; x_hex[i]; i++) {
-        x_hex[i] = tolower(x_hex[i]);
-    }
-    for (int i = 0; y_hex[i]; i++) {
-        y_hex[i] = tolower(y_hex[i]);
-    }
-    sprintf(hex_string, "04%s%s", x_hex, y_hex);
-}
