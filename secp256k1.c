@@ -1,10 +1,13 @@
 /*Author: 8891689
-  Assist in creation ：ChatGPT / deepseek
+ * Assist in creation ：ChatGPT 
  */
 #include "secp256k1.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
+
+#define BIGINT_SIZE 8  // 根据实际情况调整数值
 
 // ------------------------------
 // 大整数基本运算实现
@@ -588,16 +591,24 @@ void jacobian_to_affine(ECPoint *R, const ECPointJac *P, const BigInt *p) {
 }
 
 // ------------------------------
-// 辅助工具函数实现
+// 辅助工具函数
 // ------------------------------
+
 void print_bigint(const BigInt *b) {
-    for (int i = BIGINT_WORDS - 1; i >= 0; i--) {
+    for (int i = BIGINT_SIZE - 1; i >= 0; i--) {
         printf("%08x", b->data[i]);
     }
     printf("\n");
 }
 
-void hex_to_bigint(const char* hex, BigInt *b) {
+void bigint_to_hex(const BigInt *num, char *hex_string) {
+    int len = 0;
+    for (int i = BIGINT_SIZE - 1; i >= 0; i--) {
+        len += sprintf(hex_string + len, "%08x", num->data[i]);
+    }
+}
+
+void hex_to_bigint(const char *hex, BigInt *b) {
     memset(b->data, 0, sizeof(b->data));
     int len = (int)strlen(hex);
     int j = 0;
@@ -610,12 +621,35 @@ void hex_to_bigint(const char* hex, BigInt *b) {
     }
 }
 
-void bigint_to_hex(const BigInt *num, char *hex_string) {
-    // 直接按大端序填充64字符，不进行任何截断
-    for (int i = BIGINT_WORDS - 1; i >= 0; i--) {
-        sprintf(hex_string + (BIGINT_WORDS - 1 - i)*8, "%08X", num->data[i]);
+void point_to_compressed_hex(const ECPoint *P, char *hex_string) {
+    if (P->infinity) {
+        strcpy(hex_string, "00");
+        return;
     }
-    hex_string[64] = '\0'; // 确保终止符
+    char x_hex[65];
+    bigint_to_hex(&P->x, x_hex);
+    for (int i = 0; x_hex[i]; i++) {
+        x_hex[i] = tolower(x_hex[i]);
+    }
+    if ((P->y.data[0] & 1) == 0)
+        sprintf(hex_string, "02%s", x_hex);
+    else
+        sprintf(hex_string, "03%s", x_hex);
 }
 
-
+void point_to_uncompressed_hex(const ECPoint *P, char *hex_string) {
+    if (P->infinity) {
+        strcpy(hex_string, "00");
+        return;
+    }
+    char x_hex[65], y_hex[65];
+    bigint_to_hex(&P->x, x_hex);
+    bigint_to_hex(&P->y, y_hex);
+    for (int i = 0; x_hex[i]; i++) {
+        x_hex[i] = tolower(x_hex[i]);
+    }
+    for (int i = 0; y_hex[i]; i++) {
+        y_hex[i] = tolower(y_hex[i]);
+    }
+    sprintf(hex_string, "04%s%s", x_hex, y_hex);
+}
