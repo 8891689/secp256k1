@@ -1,5 +1,5 @@
 /*Author: 8891689
-  Assist in creation ：ChatGPT 
+ * Assist in creation ：ChatGPT 
  */
 #ifndef SECP256K1_H
 #define SECP256K1_H
@@ -85,11 +85,12 @@ void scalar_multiply_jac(ECPointJac *result,
                         const BigInt *scalar,
                         const BigInt *p);
 
-// ------------------------------
-// 辅助工具函数
-// ------------------------------
+// --- 辅助工具 ---
 void print_bigint(const BigInt *b);
-void hex_to_bigint(const char* hex, BigInt *b);
+void hex_to_bigint(const char *hex, BigInt *b);
 void bigint_to_hex(const BigInt *num, char *hex_string);
 
+// --- ECPoint 转换 ---
+void point_to_compressed_hex(const ECPoint *P, char *hex_string);
+void point_to_uncompressed_hex(const ECPoint *P, char *hex_string);
 #endif // SECP256K1_H
