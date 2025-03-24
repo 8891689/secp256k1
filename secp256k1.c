@@ -10,6 +10,56 @@
 #define BIGINT_SIZE 8  // 根据实际情况调整数值
 
 // ------------------------------
+// secp256k1 曲线参数
+// ------------------------------
+
+// secp256k1 的素数域 p = 2^256 - 2^32 - 977
+static const BigInt secp256k1_p = {
+    .data = {
+        0xFFFFFC2F, 0xFFFFFFFE, 0xFFFFFFFF, 0xFFFFFFFF,
+        0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    }
+};
+
+// 基点 G 的仿射坐标 (十六进制小端序)
+static const BigInt G_x = {
+    .data = {
+        0x16F81798, 0x59F2815B, 0x2DCE28D9, 0x029BFCDB,
+        0xCE870B07, 0x55A06295, 0xF9DCBBAC, 0x79BE667E
+    }
+};
+
+static const BigInt G_y = {
+    .data = {
+        0xFB10D4B8, 0x9C47D08F, 0xA6855419, 0xFD17B448,
+        0x0E1108A8, 0x5DA4FBFC, 0x26A3C465, 0x483ADA77
+    }
+};
+
+// 基点 G 的雅可比坐标表示 (Z=1)
+static const ECPointJac G_jacobian = {
+    .X = G_x,
+    .Y = G_y,
+    .Z = { .data = {1, 0, 0, 0, 0, 0, 0, 0} },
+    .infinity = false
+};
+
+// ------------------------------
+// 私钥转公钥实现
+// ------------------------------
+
+void private_to_public_key(ECPoint *public_key, const BigInt *private_key) {
+    ECPointJac result_jac;
+    
+    // 执行标量乘法：Q = private_key * G
+    scalar_multiply_jac(&result_jac, &G_jacobian, private_key, &secp256k1_p);
+    
+    // 将雅可比坐标转换为仿射坐标
+    jacobian_to_affine(public_key, &result_jac, &secp256k1_p);
+}
+
+
+// ------------------------------
 // 大整数基本运算实现
 // ------------------------------
 void init_bigint(BigInt *x, uint32_t val) {
@@ -45,14 +95,16 @@ int get_bit(const BigInt *a, int i) {
     return (a->data[word_idx] >> bit_idx) & 1;
 }
 
+// 在ptx_u256Add和ptx_u256Sub中使用uint64_t进行中间计算
 void ptx_u256Add(BigInt *res, const BigInt *a, const BigInt *b) {
-    uint32_t carry = 0;
+    uint64_t carry = 0;
     for (int i = 0; i < BIGINT_WORDS; i++) {
         uint64_t sum = (uint64_t)a->data[i] + b->data[i] + carry;
         res->data[i] = (uint32_t)sum;
-        carry = (uint32_t)(sum >> 32);
+        carry = sum >> 32;
     }
 }
+
 
 void ptx_u256Sub(BigInt *res, const BigInt *a, const BigInt *b) {
     // 加载所有数据到寄存器
@@ -108,21 +160,16 @@ void free_bigint(BigInt *a) {
 // Montgomery 参数及运算实现（已替换）
 // ------------------------------
 
-/* Montgomery 参数上下文结构体
-   （如果你的 secp256k1.h 中已有定义，请确保其成员与下述一致）*/
-typedef struct {
-    BigInt R;       // R = 2^(32*BIGINT_WORDS) mod p
-    BigInt R2;      // R^2 mod p
-    BigInt inv_p;   // -p^-1 mod 2^32，仅使用第一个32位字，其余清零
-} MontgomeryCtx;
-
 // 简单模约简函数（假设 a < 2p）
 void mod_generic(BigInt *r, const BigInt *a, const BigInt *p) {
-    memcpy(r->data, a->data, sizeof(a->data));
-    if (compare_bigint(r, p) >= 0) {
-        ptx_u256Sub(r, r, p);
+    if (compare_bigint(a, p) >= 0) {
+        ptx_u256Sub(r, a, p);
+    } else {
+        memcpy(r->data, a->data, sizeof(a->data));  // 使用 memcpy 进行数组复制
     }
 }
+
+
 
 // 模乘函数（仅用于 Montgomery 参数初始化时计算 R2）
 void mul_mod(BigInt *res, const BigInt *a, const BigInt *b, const BigInt *p) {
@@ -145,38 +192,40 @@ void mul_mod(BigInt *res, const BigInt *a, const BigInt *b, const BigInt *p) {
     }
 }
 
-// Montgomery 参数初始化
+// Montgomery 参数初始化（修正版）
 void montgomery_init(MontgomeryCtx *ctx, const BigInt *p) {
-    // 构造 R = 2^(32*BIGINT_WORDS)（仅最高位为1，其余为0）
+    // 构造 R = 2^(32*BIGINT_WORDS) mod p
     BigInt R;
     memset(R.data, 0, sizeof(R.data));
-    R.data[BIGINT_WORDS-1] = 1;
-    mod_generic(&ctx->R, &R, p);
+    R.data[BIGINT_WORDS-1] = 1;  // 设置最高位为1
+    mod_generic(&ctx->R, &R, p); // R mod p
 
-    // 计算 R2 = R^2 mod p
+    // 计算 R^2 mod p -> R2
     mul_mod(&ctx->R2, &ctx->R, &ctx->R, p);
 
-    // 计算 inv_p = -p^-1 mod 2^32，仅计算第一个32位字
-    uint32_t p0 = p->data[0];
+    // 计算 R^4 mod p -> R4 (新增预计算)
+    mul_mod(&ctx->R4, &ctx->R2, &ctx->R2, p);
+
+    // 计算 inv_p = -p^-1 mod 2^32
+    uint32_t p0 = p->data[0]; // 取p的最低32位
     ctx->inv_p.data[0] = 0;
+    // 快速计算模逆
     for (int i = 0; i < 32; i++) {
         if ((p0 * (1U << i)) & 1) {
             ctx->inv_p.data[0] = (1U << i) - p0;
             break;
         }
     }
-    for (int i = 1; i < BIGINT_WORDS; i++) {
-        ctx->inv_p.data[i] = 0;
-    }
+    // 高位清零
+    memset(&ctx->inv_p.data[1], 0, (BIGINT_WORDS-1)*sizeof(uint32_t));
 }
 
 // 改进后的 Montgomery 乘法实现（内联归约版本）
-void montgomery_mult(BigInt *result, 
+static inline void montgomery_mult(BigInt *result, 
                      const BigInt *a, 
                      const BigInt *b,
                      const MontgomeryCtx *ctx,
-                     const BigInt *p)
-{
+                     const BigInt *p) {
     uint32_t t[17] = {0};
 
     for (int i = 0; i < 8; i++) { // BIGINT_WORDS=8
@@ -246,14 +295,11 @@ void copy_point_jac(ECPointJac *dest, const ECPointJac *src) {
 }
 
 // 优化后的标量乘法（已验证正确性）
-void scalar_multiply_jac(ECPointJac *result,
-                         const ECPointJac *point,
-                         const BigInt *scalar,
-                         const BigInt *p) 
-{
+void scalar_multiply_jac(ECPointJac *result, const ECPointJac *point, const BigInt *scalar, const BigInt *p) {
     ECPointJac res;
     init_point_jac(&res, true);
 
+    // 使用窗口法来优化标量乘法
     int highest_bit = BIGINT_WORDS * 32 - 1;
     for (; highest_bit >= 0; highest_bit--) {
         if (get_bit(scalar, highest_bit)) break;
@@ -270,6 +316,7 @@ void scalar_multiply_jac(ECPointJac *result,
     }
     copy_point_jac(result, &res);
 }
+
 
 // 以下为9字扩展运算实现
 void multiply_bigint_by_const(const BigInt *a, uint32_t c, uint32_t result[9]) {
@@ -359,9 +406,7 @@ void efficient_mod(BigInt *r, const BigInt *a, const BigInt *p) {
     }
 }
 
-void mod_generic_old(BigInt *r, const BigInt *a, const BigInt *p) {
-    efficient_mod(r, a, p);
-}
+
 
 void sub_mod(BigInt *res, const BigInt *a, const BigInt *b, const BigInt *p) {
     BigInt temp;
@@ -423,8 +468,15 @@ void point_copy(ECPoint *dest, const ECPoint *src) {
 }
 
 void point_add(ECPoint *R, const ECPoint *P, const ECPoint *Q, const BigInt *p) {
-    if (P->infinity) { point_copy(R, Q); return; }
-    if (Q->infinity) { point_copy(R, P); return; }
+    if (P->infinity) {
+        point_copy(R, Q);
+        return;
+    }
+    if (Q->infinity) {
+        point_copy(R, P);
+        return;
+    }
+
     BigInt diffY, diffX, inv_diffX, lambda, lambda2, temp;
     sub_mod(&diffY, &Q->y, &P->y, p);
     sub_mod(&diffX, &Q->x, &P->x, p);
@@ -438,6 +490,7 @@ void point_add(ECPoint *R, const ECPoint *P, const ECPoint *Q, const BigInt *p) 
     sub_mod(&R->y, &R->y, &P->y, p);
     R->infinity = false;
 }
+
 
 void double_point(ECPoint *R, const ECPoint *P, const BigInt *p) {
     if (P->infinity || is_zero(&P->y)) {
