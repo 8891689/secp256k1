@@ -1,14 +1,18 @@
 /*Author: 8891689
-  Assist in creation ：ChatGPT 
+ * Assist in creation ：ChatGPT gemini
  */
 #ifndef SECP256K1_H
 #define SECP256K1_H
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
+#include <stddef.h>
 
 // 定义大整数，每个大整数由 8 个 32 位无符号整数构成
+#define BIGINT_SIZE 8
 #define BIGINT_WORDS 8
+
 
 typedef struct {
     uint32_t data[BIGINT_WORDS];
@@ -26,13 +30,33 @@ typedef struct {
     bool infinity;
 } ECPointJac;
 
-// ------------------------------
-// 大整数运算函数原型
-// ------------------------------
+typedef struct {
+    BigInt R; 
+    BigInt R2; 
+    BigInt R4; 
+    BigInt inv_p; 
+} MontgomeryCtx;
+
+// --- secp256k1 曲線參數聲明 ---
+extern const BigInt secp256k1_p; 
+extern const BigInt secp256k1_n; 
+// ******** is_odd 函數聲明 ********
+bool is_odd(const BigInt *n);
+// 添加声明
+extern const ECPointJac G_jacobian;
+void mul_mod_old(BigInt *res, const BigInt *a, const BigInt *b, const BigInt *p);
+// --- BigInt/Byte 轉換函數聲明 ---
+void bytes_be_to_bigint(const uint8_t bytes[32], BigInt *b); 
+void bigint_to_bytes_be(const BigInt *b, uint8_t bytes[32]); 
+// --- 模 n 運算函數聲明 ---
+void add_mod_n(BigInt *res, const BigInt *a, const BigInt *b, const BigInt *n); 
+
 void init_bigint(BigInt *x, uint32_t val);
 void copy_bigint(BigInt *dest, const BigInt *src);
 int compare_bigint(const BigInt *a, const BigInt *b);
 bool is_zero(const BigInt *a);
+bool is_one(const BigInt *a);
+
 int get_bit(const BigInt *a, int i);
 void ptx_u256Add(BigInt *res, const BigInt *a, const BigInt *b);
 void ptx_u256Sub(BigInt *res, const BigInt *a, const BigInt *b);
@@ -93,4 +117,11 @@ void bigint_to_hex(const BigInt *num, char *hex_string);
 // --- ECPoint 转换 ---
 void point_to_compressed_hex(const ECPoint *P, char *hex_string);
 void point_to_uncompressed_hex(const ECPoint *P, char *hex_string);
+void private_to_public_key(ECPoint *public_key, const BigInt *private_key);
+void compute_public_keys(const char *priv_hex, char *compressed_pub_hex, char *uncompressed_pub_hex);
+void compute_compressed_pubkey(const char *priv_hex, char *compressed_pub_hex);
+void compute_pubkey_coordinates(const char *priv_hex, char *x_hex, char *y_hex);
+int hex_str_to_ecpoint(const char *pub_hex_str, ECPoint *P);
+
 #endif // SECP256K1_H
+
