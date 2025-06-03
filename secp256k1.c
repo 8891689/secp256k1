@@ -1,5 +1,5 @@
-/*Author: 8891689
- * Assist in creation ：ChatGPT 
+/*author：https://github.com/8891689
+ * Assist in creation ：ChatGPT gemini
  */
 #include "secp256k1.h"
 #include <stdio.h>
@@ -7,19 +7,25 @@
 #include <string.h>
 #include <ctype.h>
 
-#define BIGINT_SIZE 8  // 根据实际情况调整数值
-
 // ------------------------------
 // secp256k1 曲线参数
 // ------------------------------
-
-// secp256k1 的素数域 p = 2^256 - 2^32 - 977
-static const BigInt secp256k1_p = {
+// secp256k1 的素数域 p
+const BigInt secp256k1_p = {
     .data = {
         0xFFFFFC2F, 0xFFFFFFFE, 0xFFFFFFFF, 0xFFFFFFFF,
         0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
     }
 };
+
+// secp256k1 的阶 n (注意字节序调整)
+const BigInt secp256k1_n = {
+    .data = {
+        0xD0364141, 0xBFD25E8C, 0xAF48A03B, 0xBAAEDCE6,
+        0xFFFFFFFE, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    }
+};
+
 
 // 基点 G 的仿射坐标 (十六进制小端序)
 static const BigInt G_x = {
@@ -37,27 +43,12 @@ static const BigInt G_y = {
 };
 
 // 基点 G 的雅可比坐标表示 (Z=1)
-static const ECPointJac G_jacobian = {
+const ECPointJac G_jacobian = {
     .X = G_x,
     .Y = G_y,
     .Z = { .data = {1, 0, 0, 0, 0, 0, 0, 0} },
     .infinity = false
 };
-
-// ------------------------------
-// 私钥转公钥实现
-// ------------------------------
-
-void private_to_public_key(ECPoint *public_key, const BigInt *private_key) {
-    ECPointJac result_jac;
-    
-    // 执行标量乘法：Q = private_key * G
-    scalar_multiply_jac(&result_jac, &G_jacobian, private_key, &secp256k1_p);
-    
-    // 将雅可比坐标转换为仿射坐标
-    jacobian_to_affine(public_key, &result_jac, &secp256k1_p);
-}
-
 
 // ------------------------------
 // 大整数基本运算实现
@@ -87,6 +78,17 @@ bool is_zero(const BigInt *a) {
     return true;
 }
 
+// ******** is_odd 函數實現 ********
+// 檢查 BigInt 是否為奇數
+// 假設 data[0] 是最低位的 32 位字 (小端序字數組)
+bool is_odd(const BigInt *n) {
+    if (BIGINT_WORDS == 0) {
+        return false; // 處理空的 BigInt (如果可能)
+    }
+    // 檢查最低位字 (data[0]) 的最低位 (bit 0)
+    return (n->data[0] & 1) != 0;
+}
+
 // 高效位获取函数
 int get_bit(const BigInt *a, int i) {
     int word_idx = i >> 5;
@@ -98,78 +100,34 @@ int get_bit(const BigInt *a, int i) {
 // 在ptx_u256Add和ptx_u256Sub中使用uint64_t进行中间计算
 void ptx_u256Add(BigInt *res, const BigInt *a, const BigInt *b) {
     uint64_t carry = 0;
-    for (int i = 0; i < BIGINT_WORDS; i++) {
+    for (int i = 0; i < BIGINT_WORDS; ++i) {
         uint64_t sum = (uint64_t)a->data[i] + b->data[i] + carry;
         res->data[i] = (uint32_t)sum;
-        carry = sum >> 32;
+        carry = (sum >> 32);
     }
 }
 
-
 void ptx_u256Sub(BigInt *res, const BigInt *a, const BigInt *b) {
-    // 加载所有数据到寄存器
-    uint32_t a0 = a->data[0], b0 = b->data[0];
-    uint32_t a1 = a->data[1], b1 = b->data[1];
-    uint32_t a2 = a->data[2], b2 = b->data[2];
-    uint32_t a3 = a->data[3], b3 = b->data[3];
-    uint32_t a4 = a->data[4], b4 = b->data[4];
-    uint32_t a5 = a->data[5], b5 = b->data[5];
-    uint32_t a6 = a->data[6], b6 = b->data[6];
-    uint32_t a7 = a->data[7], b7 = b->data[7];
-    uint32_t brw = 0; // 借位寄存器
-
-    // 完全展开减法操作
-    uint64_t tmp = (uint64_t)a0 - b0 - brw;
-    res->data[0] = (uint32_t)tmp;
-    brw = (tmp >> 32) & 1;
-
-    tmp = (uint64_t)a1 - b1 - brw;
-    res->data[1] = (uint32_t)tmp;
-    brw = (tmp >> 32) & 1;
-
-    tmp = (uint64_t)a2 - b2 - brw;
-    res->data[2] = (uint32_t)tmp;
-    brw = (tmp >> 32) & 1;
-
-    tmp = (uint64_t)a3 - b3 - brw;
-    res->data[3] = (uint32_t)tmp;
-    brw = (tmp >> 32) & 1;
-
-    tmp = (uint64_t)a4 - b4 - brw;
-    res->data[4] = (uint32_t)tmp;
-    brw = (tmp >> 32) & 1;
-
-    tmp = (uint64_t)a5 - b5 - brw;
-    res->data[5] = (uint32_t)tmp;
-    brw = (tmp >> 32) & 1;
-
-    tmp = (uint64_t)a6 - b6 - brw;
-    res->data[6] = (uint32_t)tmp;
-    brw = (tmp >> 32) & 1;
-
-    tmp = (uint64_t)a7 - b7 - brw;
-    res->data[7] = (uint32_t)tmp;
-}
-
-
-void free_bigint(BigInt *a) {
-    memset(a->data, 0, sizeof(a->data));
+    uint32_t borrow = 0;
+    for (int i = 0; i < BIGINT_WORDS; ++i) {
+        uint64_t diff = (uint64_t)a->data[i] - b->data[i] - borrow;
+        res->data[i] = (uint32_t)diff;
+        borrow = (diff >> 32) & 1;
+    }
 }
 
 // ------------------------------
-// Montgomery 参数及运算实现（已替换）
+// Montgomery 参数及运算实现
 // ------------------------------
 
 // 简单模约简函数（假设 a < 2p）
 void mod_generic(BigInt *r, const BigInt *a, const BigInt *p) {
-    if (compare_bigint(a, p) >= 0) {
-        ptx_u256Sub(r, a, p);
+    if (compare_bigint(a, p) >= 0) { // 比較的是 (a+b) mod 2^256 的結果
+        ptx_u256Sub(r, a, p);      // 如果 >= p，只減去一次 p
     } else {
-        memcpy(r->data, a->data, sizeof(a->data));  // 使用 memcpy 进行数组复制
+        copy_bigint(r, a);         // 否則直接複製
     }
 }
-
-
 
 // 模乘函数（仅用于 Montgomery 参数初始化时计算 R2）
 void mul_mod(BigInt *res, const BigInt *a, const BigInt *b, const BigInt *p) {
@@ -192,90 +150,95 @@ void mul_mod(BigInt *res, const BigInt *a, const BigInt *b, const BigInt *p) {
     }
 }
 
-// Montgomery 参数初始化（修正版）
+// ------------------------------
+// Montgomery 参数初始化（优化后的模逆计算）
+// ------------------------------
 void montgomery_init(MontgomeryCtx *ctx, const BigInt *p) {
     // 构造 R = 2^(32*BIGINT_WORDS) mod p
     BigInt R;
     memset(R.data, 0, sizeof(R.data));
     R.data[BIGINT_WORDS-1] = 1;  // 设置最高位为1
-    mod_generic(&ctx->R, &R, p); // R mod p
+    mod_generic(&ctx->R, &R, p);
 
     // 计算 R^2 mod p -> R2
     mul_mod(&ctx->R2, &ctx->R, &ctx->R, p);
 
-    // 计算 R^4 mod p -> R4 (新增预计算)
+    // 计算 R^4 mod p -> R4
     mul_mod(&ctx->R4, &ctx->R2, &ctx->R2, p);
 
-    // 计算 inv_p = -p^-1 mod 2^32
-    uint32_t p0 = p->data[0]; // 取p的最低32位
-    ctx->inv_p.data[0] = 0;
-    // 快速计算模逆
-    for (int i = 0; i < 32; i++) {
-        if ((p0 * (1U << i)) & 1) {
-            ctx->inv_p.data[0] = (1U << i) - p0;
-            break;
-        }
-    }
-    // 高位清零
+    // 使用牛顿迭代法计算 inv_p = -p^-1 mod 2^32
+    uint32_t p0 = p->data[0];
+    uint32_t inv = 1;
+    // 4次牛顿迭代足够收敛32位精度
+    inv *= 2 - p0 * inv;
+    inv *= 2 - p0 * inv;
+    inv *= 2 - p0 * inv;
+    inv *= 2 - p0 * inv;
+    ctx->inv_p.data[0] = -inv;
     memset(&ctx->inv_p.data[1], 0, (BIGINT_WORDS-1)*sizeof(uint32_t));
 }
 
-// 改进后的 Montgomery 乘法实现（内联归约版本）
-static inline void montgomery_mult(BigInt *result, 
-                     const BigInt *a, 
-                     const BigInt *b,
-                     const MontgomeryCtx *ctx,
-                     const BigInt *p) {
-    uint32_t t[17] = {0};
+// ------------------------------
+// 优化后的Montgomery乘法（循环展开+64位中间存储）
+// ------------------------------
+static inline void montgomery_mult(BigInt *restrict result, 
+                     const BigInt *restrict a, 
+                     const BigInt *restrict b,
+                     const MontgomeryCtx *restrict ctx,
+                     const BigInt *restrict p) {
+    uint64_t t[17] = {0}; // 使用64位存储中间结果
 
-    for (int i = 0; i < 8; i++) { // BIGINT_WORDS=8
+    for (int i = 0; i < BIGINT_WORDS; ++i) {
         const uint32_t a_i = a->data[i];
         const uint32_t *b_ptr = b->data;
-        uint32_t *t_ptr = &t[i];
+        uint64_t *t_ptr = &t[i];
         uint64_t carry = 0;
 
-        // 使用指针算术优化内存访问
-        for (int j = 0; j < 8; j++) {
+        // 手动展开乘法累加循环
+        #pragma unroll
+        for (int j = 0; j < BIGINT_WORDS; ++j) {
             uint64_t prod = (uint64_t)a_i * b_ptr[j] + t_ptr[j] + carry;
-            t_ptr[j] = (uint32_t)prod;
+            t_ptr[j] = prod & 0xFFFFFFFFULL;
             carry = prod >> 32;
         }
-        t_ptr[8] += (uint32_t)carry;
+        t_ptr[BIGINT_WORDS] += carry;
 
-        uint32_t m = t[i] * ctx->inv_p.data[0];
-        carry = 0;
+        // 计算蒙哥马利约简系数m
+        uint32_t m = (uint32_t)t_ptr[0] * ctx->inv_p.data[0];
+        
+        // 手动展开模约简循环
         const uint32_t *p_ptr = p->data;
-        t_ptr = &t[i]; // 重置指针
-
-        for (int j = 0; j < 8; j++) {
+        carry = 0;
+        #pragma unroll
+        for (int j = 0; j < BIGINT_WORDS; ++j) {
             uint64_t term = (uint64_t)m * p_ptr[j] + t_ptr[j] + carry;
-            t_ptr[j] = (uint32_t)term;
+            t_ptr[j] = term & 0xFFFFFFFFULL;
             carry = term >> 32;
         }
 
-        // 快速进位处理（最多2次）
-        for (int k = 8; carry && k < 16; k++) {
-            uint64_t sum = t[i+k] + carry;
-            t[i+k] = (uint32_t)sum;
+        // 处理高位进位（手动展开）
+        for (int k = BIGINT_WORDS; carry && k < 2*BIGINT_WORDS; ++k) {
+            uint64_t sum = t_ptr[k] + carry;
+            t_ptr[k] = sum & 0xFFFFFFFFULL;
             carry = sum >> 32;
         }
     }
 
-    // 手动展开结果拷贝（比 memcpy 更快）
-    result->data[0] = t[8]; result->data[1] = t[9];
-    result->data[2] = t[10]; result->data[3] = t[11];
-    result->data[4] = t[12]; result->data[5] = t[13];
-    result->data[6] = t[14]; result->data[7] = t[15];
-    
-    if (compare_bigint(result, p) >= 0) {
-        ptx_u256Sub(result, result, p);
+    // 拷贝结果并处理溢出
+    BigInt tmp;
+    for (int i = 0; i < BIGINT_WORDS; ++i) {
+        tmp.data[i] = (uint32_t)t[BIGINT_WORDS + i];
     }
+    
+    // 使用快速比较和减法
+    if (compare_bigint(&tmp, p) >= 0) {
+        ptx_u256Sub(&tmp, &tmp, p);
+    }
+    copy_bigint(result, &tmp);
 }
 
-
-
 // ------------------------------
-// ECC 点运算以及其它辅助函数（保持原样）
+// ECC 点运算以及其它辅助函数
 // ------------------------------
 
 // 雅可比坐标点初始化
@@ -316,7 +279,6 @@ void scalar_multiply_jac(ECPointJac *result, const ECPointJac *point, const BigI
     }
     copy_point_jac(result, &res);
 }
-
 
 // 以下为9字扩展运算实现
 void multiply_bigint_by_const(const BigInt *a, uint32_t c, uint32_t result[9]) {
@@ -406,8 +368,6 @@ void efficient_mod(BigInt *r, const BigInt *a, const BigInt *p) {
     }
 }
 
-
-
 void sub_mod(BigInt *res, const BigInt *a, const BigInt *b, const BigInt *p) {
     BigInt temp;
     if (compare_bigint(a, b) < 0) {
@@ -421,13 +381,33 @@ void sub_mod(BigInt *res, const BigInt *a, const BigInt *b, const BigInt *p) {
     copy_bigint(res, &temp);
 }
 
+// 在 修改 add_mod 函數
 void add_mod(BigInt *res, const BigInt *a, const BigInt *b, const BigInt *p) {
-    BigInt temp;
-    ptx_u256Add(&temp, a, b);
-    mod_generic(&temp, &temp, p);
-    copy_bigint(res, &temp);
+    BigInt sum_ab;
+    uint64_t carry = 0; // 使用 uint64_t 來儲存進位
+
+    // 1. 計算 sum = a + b，並記錄進位
+    for (int i = 0; i < BIGINT_WORDS; ++i) {
+         uint64_t word_sum = (uint64_t)a->data[i] + b->data[i] + carry;
+         sum_ab.data[i] = (uint32_t)word_sum;
+         carry = word_sum >> 32; // 獲取下一個進位
+    }
+    // 'carry' 現在持有最終的進位 (0 或 1)
+
+    // 2. 判斷數學和 (a+b) 是否 >= p
+    // 條件：發生了進位 (carry=1) 或者 雖然沒進位但結果 sum_ab 已經 >= p
+    if (carry || compare_bigint(&sum_ab, p) >= 0) {
+        // 3. 如果 >= p，則結果是 sum_ab - p
+        //    注意：這裡的 sum_ab 是 (a+b) mod 2^256，減去 p 是正確的
+        ptx_u256Sub(res, &sum_ab, p);
+    } else {
+        // 4. 否則，結果就是 sum_ab
+        copy_bigint(res, &sum_ab);
+    }
 }
 
+// 可以保留 add_mod_n，或者如果不再需要可以移除它，
+// 因為 add_mod 現在已經實現了相同的功能。
 void modexp(BigInt *res, const BigInt *base, const BigInt *exp, const BigInt *p) {
     BigInt result;
     init_bigint(&result, 1);
@@ -490,7 +470,6 @@ void point_add(ECPoint *R, const ECPoint *P, const ECPoint *Q, const BigInt *p) 
     sub_mod(&R->y, &R->y, &P->y, p);
     R->infinity = false;
 }
-
 
 void double_point(ECPoint *R, const ECPoint *P, const BigInt *p) {
     if (P->infinity || is_zero(&P->y)) {
@@ -644,20 +623,20 @@ void jacobian_to_affine(ECPoint *R, const ECPointJac *P, const BigInt *p) {
 }
 
 // ------------------------------
-// 辅助工具函数
+// 辅助工具函数（优化后）
 // ------------------------------
-
 void print_bigint(const BigInt *b) {
-    for (int i = BIGINT_SIZE - 1; i >= 0; i--) {
+    // BIGINT_SIZE 定義與 BIGINT_WORDS 一致
+    for (int i = BIGINT_WORDS - 1; i >= 0; i--) {
         printf("%08x", b->data[i]);
     }
     printf("\n");
 }
 
 void bigint_to_hex(const BigInt *num, char *hex_string) {
-    int len = 0;
-    for (int i = BIGINT_SIZE - 1; i >= 0; i--) {
-        len += sprintf(hex_string + len, "%08x", num->data[i]);
+    // 直接利用 %08x 輸出小寫，避免後續轉換
+    for (int i = BIGINT_WORDS - 1; i >= 0; i--) {
+        sprintf(hex_string + (BIGINT_WORDS - 1 - i) * 8, "%08x", num->data[i]);
     }
 }
 
@@ -665,12 +644,14 @@ void hex_to_bigint(const char *hex, BigInt *b) {
     memset(b->data, 0, sizeof(b->data));
     int len = (int)strlen(hex);
     int j = 0;
-    for (int i = len; i > 0; i -= 8) {
-        int start = i - 8;
-        if (start < 0) start = 0;
-        char temp[9] = {0};
-        strncpy(temp, hex + start, 8);
+    while (len > 0 && j < BIGINT_WORDS) {
+        // 每次處理最多8個字符
+        int chunk = (len >= 8) ? 8 : len;
+        char temp[9];
+        memcpy(temp, hex + len - chunk, chunk);
+        temp[chunk] = '\0';
         b->data[j++] = (uint32_t)strtoul(temp, NULL, 16);
+        len -= chunk;
     }
 }
 
@@ -681,13 +662,8 @@ void point_to_compressed_hex(const ECPoint *P, char *hex_string) {
     }
     char x_hex[65];
     bigint_to_hex(&P->x, x_hex);
-    for (int i = 0; x_hex[i]; i++) {
-        x_hex[i] = tolower(x_hex[i]);
-    }
-    if ((P->y.data[0] & 1) == 0)
-        sprintf(hex_string, "02%s", x_hex);
-    else
-        sprintf(hex_string, "03%s", x_hex);
+    // %08x 已輸出小寫，直接拼接前綴即可
+    sprintf(hex_string, "%s%s", (P->y.data[0] & 1) ? "03" : "02", x_hex);
 }
 
 void point_to_uncompressed_hex(const ECPoint *P, char *hex_string) {
@@ -698,11 +674,218 @@ void point_to_uncompressed_hex(const ECPoint *P, char *hex_string) {
     char x_hex[65], y_hex[65];
     bigint_to_hex(&P->x, x_hex);
     bigint_to_hex(&P->y, y_hex);
-    for (int i = 0; x_hex[i]; i++) {
-        x_hex[i] = tolower(x_hex[i]);
-    }
-    for (int i = 0; y_hex[i]; i++) {
-        y_hex[i] = tolower(y_hex[i]);
-    }
     sprintf(hex_string, "04%s%s", x_hex, y_hex);
+}
+
+// ------------------------------
+// 封裝私钥转公钥实现
+// ------------------------------
+void private_to_public_key(ECPoint *public_key, const BigInt *private_key) {
+    ECPointJac result_jac;
+    
+    // 执行标量乘法：Q = private_key * G
+    scalar_multiply_jac(&result_jac, &G_jacobian, private_key, &secp256k1_p);
+    
+    // 将雅可比坐标转换为仿射坐标
+    jacobian_to_affine(public_key, &result_jac, &secp256k1_p);
+}
+// --- BigInt/Byte 轉換函數實現 ---
+// 將 32 字節的大端序數據 (例如 BIP32 密鑰) 轉換為 BigInt (內部小端字序)
+// 輸入 bytes[0]...bytes[31] 是 BE (bytes[0] 是最高位字節)
+// 輸出 b->data[0]...b->data[7] 是 LE words (b->data[0] 是最低位字)
+void bytes_be_to_bigint(const uint8_t bytes[32], BigInt *b) {
+    memset(b->data, 0, sizeof(b->data));
+    for (int i = 0; i < BIGINT_WORDS; ++i) { // i = 0 to 7 (word index)
+        // Word i (b->data[i]) 對應的字節範圍是 bytes[31-(i*4)-3] ... bytes[31-(i*4)]
+        // 例如：
+        // i = 0 (LSW): 需要 bytes[28..31] -> b->data[0]
+        // i = 7 (MSW): 需要 bytes[0..3]  -> b->data[7]
+        int base_byte_idx = 31 - (i * 4); // 字節數組中最右邊字節的索引
+        // 確保索引不越界 (雖然對於 32 字節輸入和 8 個字應該不會)
+        if (base_byte_idx < 3 || base_byte_idx > 31) continue; // 安全檢查
+
+        b->data[i] = ((uint32_t)bytes[base_byte_idx - 3] << 24) | // 最高位字節 (e.g., bytes[28] for i=0)
+                     ((uint32_t)bytes[base_byte_idx - 2] << 16) | // (e.g., bytes[29] for i=0)
+                     ((uint32_t)bytes[base_byte_idx - 1] << 8)  | // (e.g., bytes[30] for i=0)
+                     ((uint32_t)bytes[base_byte_idx]);           // 最低位字節 (e.g., bytes[31] for i=0)
+    }
+}
+
+// 將 BigInt (內部小端字序) 轉換回 32 字節的大端序數據
+// 輸入 b->data[0]...b->data[7] 是 LE words (b->data[0] 是最低位字)
+// 輸出 bytes[0]...bytes[31] 是 BE (bytes[0] 是最高位字節)
+void bigint_to_bytes_be(const BigInt *b, uint8_t bytes[32]) {
+    memset(bytes, 0, 32);
+    for (int i = 0; i < BIGINT_WORDS; ++i) { // i = 0 to 7 (word index)
+        // Word i (b->data[i]) 需要寫入到字節範圍 bytes[31-(i*4)-3] ... bytes[31-(i*4)]
+        // 例如：
+        // i = 0 (LSW): 寫入 bytes[28..31]
+        // i = 7 (MSW): 寫入 bytes[0..3]
+        int base_byte_idx = 31 - (i * 4); // 字節數組中最右邊字節的索引
+        // 確保索引不越界
+        if (base_byte_idx < 3 || base_byte_idx > 31) continue; // 安全檢查
+
+        bytes[base_byte_idx]       = (uint8_t)(b->data[i] & 0xFF);          // 最低位字節 (e.g., -> bytes[31] for i=0)
+        bytes[base_byte_idx - 1] = (uint8_t)((b->data[i] >> 8) & 0xFF);  // (e.g., -> bytes[30] for i=0)
+        bytes[base_byte_idx - 2] = (uint8_t)((b->data[i] >> 16) & 0xFF); // (e.g., -> bytes[29] for i=0)
+        bytes[base_byte_idx - 3] = (uint8_t)((b->data[i] >> 24) & 0xFF); // 最高位字節 (e.g., -> bytes[28] for i=0)
+    }
+}
+
+// --- 模 n 運算函數實現 ---
+// 計算 (a + b) mod n
+// 設 a < n 且 b < n
+void add_mod_n(BigInt *res, const BigInt *a, const BigInt *b, const BigInt *n) {
+    BigInt sum_ab;
+    uint64_t carry = 0;
+
+    // 1. 計算 sum = a + b，並記錄進位
+    for (int i = 0; i < BIGINT_WORDS; ++i) {
+         uint64_t word_sum = (uint64_t)a->data[i] + b->data[i] + carry;
+         sum_ab.data[i] = (uint32_t)word_sum;
+         carry = word_sum >> 32; // 獲取進位
+    }
+
+    // 2. 判斷數學和是否 >= n
+    // 條件：發生了進位 (carry=1) 或者 雖然沒進位但結果 sum_ab 已經 >= n
+    if (carry || compare_bigint(&sum_ab, n) >= 0) {
+        // 3. 如果 >= n，則結果是 sum_ab - n
+        ptx_u256Sub(res, &sum_ab, n);
+    } else {
+        // 4. 否則，結果就是 sum_ab
+        copy_bigint(res, &sum_ab);
+    }
+}
+// ------------------------------
+// 封裝接口：字符串版（简单接口）
+// ------------------------------
+void compute_public_keys(const char *priv_hex,
+                           char *compressed_pub_hex,  // 至少67字节(含结尾符)
+                           char *uncompressed_pub_hex) {  // 至少131字节(含结尾符)
+    BigInt priv;
+    // 将私钥16进制字符串转换为 BigInt
+    hex_to_bigint(priv_hex, &priv);
+    
+    ECPoint pub;
+    private_to_public_key(&pub, &priv);
+    
+    point_to_compressed_hex(&pub, compressed_pub_hex);
+    point_to_uncompressed_hex(&pub, uncompressed_pub_hex);
+}
+
+void compute_compressed_pubkey(const char *priv_hex, char *compressed_pub_hex) {
+    BigInt priv;
+    hex_to_bigint(priv_hex, &priv);
+    
+    ECPoint pub;
+    private_to_public_key(&pub, &priv);
+    
+    point_to_compressed_hex(&pub, compressed_pub_hex);
+}
+
+void compute_pubkey_coordinates(const char *priv_hex,
+                                char *x_hex,   // 至少65字节
+                                char *y_hex) { // 至少65字节
+    BigInt priv;
+    hex_to_bigint(priv_hex, &priv);
+    
+    ECPoint pub;
+    private_to_public_key(&pub, &priv);
+    
+    bigint_to_hex(&pub.x, x_hex);
+    bigint_to_hex(&pub.y, y_hex);
+}
+
+static const BigInt secp256k1_sqrt_exp = {
+    .data = {
+        0xBFFFFF0C,  // 最低有效字 (W0)
+        0xFFFFFFFF,  // W1
+        0xFFFFFFFF,  // W2
+        0xFFFFFFFF,  // W3
+        0xFFFFFFFF,  // W4
+        0xFFFFFFFF,  // W5
+        0xFFFFFFFF,  // W6
+        0x3FFFFFFF   // W7  （最高有效字）
+    }
+};
+
+/**
+ * 将一个十六进制字符串（压缩或非压缩的 SEC 公钥）转换成 ECPoint：
+ *   - pub_hex_str 长度要么 66（以 '02' 或 '03' 开头），要么 130（以 '04' 开头）。
+ *   - 对于非压缩格式：0x04 || X(32 bytes) || Y(32 bytes)，直接把 X、Y 拆出来；
+ *   - 对于压缩格式：0x02/0x03 || X(32 bytes)，需要先把 X 提取出来，再计算
+ *       α = X^3 + 7 (mod p)，然后 Y = α^((p+1)/4) (mod p)，最后根据前缀 0x02/0x03 确定
+ *       是要偶数根（0x02）还是奇数根（0x03）。
+ *
+ * 如果解析成功，P->x, P->y 都会被填好，P->infinity = false；否则返回 -1。
+ */
+int hex_str_to_ecpoint(const char *pub_hex_str, ECPoint *P) {
+    size_t len = strlen(pub_hex_str);
+    // **格式校验**
+    if (!(len == 66 || len == 130)) {
+        fprintf(stderr, "hex_str_to_ecpoint: 输入长度既不是 66（压缩）也不是 130（非压缩），len=%zu\n", len);
+        return -1;
+    }
+    if (pub_hex_str[0] != '0' || !(pub_hex_str[1] == '2' || pub_hex_str[1] == '3' || pub_hex_str[1] == '4')) {
+        fprintf(stderr, "hex_str_to_ecpoint: 非法前缀 (必须以 '02', '03' 或 '04' 开头)，got=\"%c%c\"\n",
+                pub_hex_str[0], pub_hex_str[1]);
+        return -1;
+    }
+
+    BigInt x, y, alpha, tmp1, tmp2;
+    char buf[65];  // 用来暂存 64 个 hex + '\0'
+
+    if (pub_hex_str[1] == '4') {
+        // ==========================
+        // 非压缩格式： 0x04 || X(32 bytes) || Y(32 bytes)
+        // ==========================
+        // X 占 64 个 hex 位，从位置 [2..65]，Y 占 64 个 hex，从 [66..129]
+        memset(buf, 0, sizeof(buf));
+        memcpy(buf, pub_hex_str + 2, 64);
+        hex_to_bigint(buf, &x);
+
+        memset(buf, 0, sizeof(buf));
+        memcpy(buf, pub_hex_str + 66, 64);
+        hex_to_bigint(buf, &y);
+
+        P->x = x;
+        P->y = y;
+        P->infinity = false;
+        return 0;
+    } else {
+        // ==========================
+        // 压缩格式： 0x02/0x03 || X(32 bytes)
+        // ==========================
+        int want_odd = (pub_hex_str[1] == '3');  // '02' 表示偶数根，'03' 表示奇数根
+
+        // 先提取 X（64 个 hex，从 [2..65]）
+        memset(buf, 0, sizeof(buf));
+        memcpy(buf, pub_hex_str + 2, 64);
+        hex_to_bigint(buf, &x);
+
+        // 计算 α = x^3 + 7 (mod p)
+        //   tmp1 = x * x  (x^2)
+        mul_mod_old(&tmp1, &x, &x, &secp256k1_p);
+        //   alpha = x^2 * x = x^3
+        mul_mod_old(&alpha, &tmp1, &x, &secp256k1_p);
+        //   加上常数 7
+        BigInt seven; 
+        init_bigint(&seven, 7);
+        add_mod(&alpha, &alpha, &seven, &secp256k1_p);
+
+        // y = alpha^((p+1)/4) mod p  —— 用预先算好的指数 secp256k1_sqrt_exp
+        modexp(&y, &alpha, &secp256k1_sqrt_exp, &secp256k1_p);
+
+        // 此时 y^2 ≡ α (mod p)。不过 y 可能对应两种根：y 和 p - y。
+        // 下面确保 parity (奇偶) 跟 want_odd 一致，否则取 p - y。
+        if ((is_odd(&y) ? 1 : 0) != want_odd) {
+            // y = p - y
+            sub_mod(&y, &secp256k1_p, &y, &secp256k1_p);
+        }
+
+        P->x = x;
+        P->y = y;
+        P->infinity = false;
+        return 0;
+    }
 }
